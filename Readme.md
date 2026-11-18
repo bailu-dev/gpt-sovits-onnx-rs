@@ -95,7 +95,7 @@ rsync -a --exclude='/vits.onnx' "$CACHED_DIR/" "$STREAM_DIR/"
 省略 `--ref-audio` 时，CLI 读取当前工作目录的 `ref.wav`。
 
 ```bash
-cargo run --locked --release --example gpt_sovits_demo -- \
+cargo run --release --example gpt_sovits_demo -- \
   --model-path "$STREAM_DIR" --stream \
   --ref-audio /path/to/ref.wav \
   --ref-text '<参考音频的准确转录>' --text '等雨停下来以后，我们可以沿着河边慢慢走到灯塔，再去那家小店坐一会儿。' \
@@ -158,6 +158,16 @@ adb pull "$DEVICE_DIR/stream.wav" target/android/stream.wav
   合成速度调整块长。应用可在收到首块 PCM 后开始播放。
 
 在同一模型实例上重新调用 `process_reference_sync`，即可用新的 WAV 路径和转录切换音色。
+
+### 跨实例复用参考音特征
+
+`TTSModel::from_bundle_lazy_reference` 先加载合成会话。缓存命中时，用
+`restore_reference` 安装已有特征。首次使用参考音或缓存失效时，用
+`process_reference_sync` 处理 WAV 和转录，再用 `encode_reference` 取得可缓存的字节。
+按需加载模式会在预处理结束后释放参考音会话。
+
+调用方负责保存缓存，并按模型包、参考 WAV、转录和 `LangId` 匹配缓存。升级模型或库版本时
+可重新生成特征。`from_bundle` 适合在同一实例中反复处理参考音，会在初始化时打开并保留这些会话。
 
 ## 性能
 

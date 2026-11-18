@@ -104,7 +104,7 @@ fn take_kv_pair(
     Ok((key, value))
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct ReferenceData {
     ref_seq: Array2<i64>,
     ref_bert: Array2<f32>,
@@ -114,22 +114,54 @@ pub struct ReferenceData {
     sv_emb: Option<ArrayD<f32>>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 enum VitsReference {
     Audio(Array2<f32>),
     Features(ArrayD<f32>),
 }
 
+struct ReferencePaths {
+    ssl: std::path::PathBuf,
+    encoder: std::path::PathBuf,
+    sv: Option<std::path::PathBuf>,
+    vits: Option<std::path::PathBuf>,
+}
+
+struct ReferenceSessions {
+    ssl: Session,
+    encoder: Session,
+    sv: Option<SvModel>,
+    vits: Option<Session>,
+}
+
+impl ReferencePaths {
+    fn open(&self) -> Result<ReferenceSessions, GSVError> {
+        Ok(ReferenceSessions {
+            ssl: create_onnx_cpu_session(&self.ssl)?,
+            encoder: create_onnx_cpu_session(&self.encoder)?,
+            sv: self
+                .sv
+                .as_ref()
+                .map(create_onnx_cpu_session)
+                .transpose()?
+                .map(SvModel::new),
+            vits: self
+                .vits
+                .as_ref()
+                .map(create_onnx_cpu_session)
+                .transpose()?,
+        })
+    }
+}
+
 pub struct TTSModel {
     text_processor: TextProcessor,
     sovits: Option<Vocoder>,
-    sovits_reference: Option<Session>,
-    ssl: Session,
-    t2s_encoder: Session,
+    reference_paths: ReferencePaths,
+    reference_sessions: Option<ReferenceSessions>,
     t2s_fs_decoder: Session,
     t2s_s_decoder: Session,
     t2s_shared_layout: Option<CacheLayout>,
-    sv: Option<SvModel>,
     ref_data: Option<Arc<ReferenceData>>,
     t2s_dec_ik: Vec<String>,
     t2s_dec_iv: Vec<String>,
@@ -187,6 +219,32 @@ impl TTSModel {
         g2p_en_path: Option<P>,
         sv_path: Option<P>,
     ) -> Result<Self, GSVError> {
+        Self::with_reference_loading(
+            sovits_path,
+            ssl_path,
+            t2s_encoder_path,
+            t2s_fs_decoder_path,
+            t2s_s_decoder_path,
+            bert_path,
+            g2pw_path,
+            g2p_en_path,
+            sv_path,
+            false,
+        )
+    }
+
+    fn with_reference_loading<P: AsRef<Path>>(
+        sovits_path: P,
+        ssl_path: P,
+        t2s_encoder_path: P,
+        t2s_fs_decoder_path: P,
+        t2s_s_decoder_path: P,
+        bert_path: Option<P>,
+        g2pw_path: Option<P>,
+        g2p_en_path: Option<P>,
+        sv_path: Option<P>,
+        lazy_reference: bool,
+    ) -> Result<Self, GSVError> {
         info!("Initializing TTSModel with ONNX sessions");
         info!("use cpu cores: {:?}", BIG_CORES.as_slice());
 
@@ -223,15 +281,24 @@ impl TTSModel {
 
         let sovits_path = sovits_path.as_ref();
         let sovits = create_onnx_cpu_session(sovits_path)?;
-        let sovits_reference = if sovits.inputs().iter().any(|input| input.name() == "ge") {
+        let vits_reference = if sovits.inputs().iter().any(|input| input.name() == "ge") {
             if sv_path.is_none() {
                 return Err(GSVError::from("Split SoVITS requires an SV model"));
             }
-            Some(create_onnx_cpu_session(
-                sovits_path.with_file_name("vits_ref.onnx"),
-            )?)
+            Some(sovits_path.with_file_name("vits_ref.onnx"))
         } else {
             None
+        };
+        let reference_paths = ReferencePaths {
+            ssl: ssl_path.as_ref().to_owned(),
+            encoder: t2s_encoder_path.as_ref().to_owned(),
+            sv: sv_path.map(|path| path.as_ref().to_owned()),
+            vits: vits_reference,
+        };
+        let reference_sessions = if lazy_reference {
+            None
+        } else {
+            Some(reference_paths.open()?)
         };
 
         Ok(TTSModel {
@@ -241,16 +308,11 @@ impl TTSModel {
                 BertModel::new(bert_path)?,
             )?,
             sovits: Some(Vocoder::new(sovits)),
-            sovits_reference,
-            ssl: create_onnx_cpu_session(ssl_path)?,
-            t2s_encoder: create_onnx_cpu_session(t2s_encoder_path)?,
+            reference_paths,
+            reference_sessions,
             t2s_fs_decoder: create_onnx_cpu_session(t2s_fs_decoder_path)?,
             t2s_s_decoder,
             t2s_shared_layout,
-            sv: match sv_path {
-                Some(p) => Some(SvModel::new(create_onnx_cpu_session(p)?)),
-                None => None,
-            },
             ref_data: None,
             t2s_dec_ik,
             t2s_dec_iv,
@@ -263,8 +325,17 @@ impl TTSModel {
 
     /// Load the standard ONNX files from the supplied model directory.
     pub fn from_bundle(root: &Path) -> Result<Self, GSVError> {
+        Self::load_bundle(root, false)
+    }
+
+    /// Open synthesis sessions. Reference sessions are scoped to preprocessing a cache miss.
+    pub fn from_bundle_lazy_reference(root: &Path) -> Result<Self, GSVError> {
+        Self::load_bundle(root, true)
+    }
+
+    fn load_bundle(root: &Path, lazy_reference: bool) -> Result<Self, GSVError> {
         let sv = root.join("sv.onnx");
-        Self::new(
+        Self::with_reference_loading(
             root.join("vits.onnx"),
             root.join("ssl.onnx"),
             root.join("t2s_encoder.onnx"),
@@ -274,6 +345,7 @@ impl TTSModel {
             Some(root.join("g2pW.onnx")),
             Some(root.join("g2p_en")),
             sv.is_file().then_some(sv),
+            lazy_reference,
         )
     }
 
@@ -315,16 +387,24 @@ impl TTSModel {
         debug!("Reference norm text: {}", ref_norm);
         let (ref_audio_16k, ref_audio_16k_raw, ref_audio_32k) =
             read_and_resample_audio(&reference_audio_path)?;
-        let ssl_content = self.process_ssl(&ref_audio_16k)?;
+        let mut transient;
+        let sessions = match &mut self.reference_sessions {
+            Some(sessions) => sessions,
+            None => {
+                transient = self.reference_paths.open()?;
+                &mut transient
+            }
+        };
+        let ssl_content = Self::process_ssl(&mut sessions.ssl, &ref_audio_16k)?;
         let ssl_shape = ssl_content.shape().to_vec();
         let prompts = {
-            let output = self.t2s_encoder.run(inputs![
+            let output = sessions.encoder.run(inputs![
                 "ssl_content" => TensorRef::from_array_view(&ssl_content)?
             ])?;
             output["prompts"].try_extract_array::<i64>()?.into_owned()
         };
 
-        let sv_emb = match &mut self.sv {
+        let sv_emb = match &mut sessions.sv {
             Some(sv_model) => {
                 let row = ref_audio_16k_raw.row(0);
                 let audio_slice = row
@@ -340,7 +420,7 @@ impl TTSModel {
             }
         };
 
-        let vits = if let Some(reference) = &mut self.sovits_reference {
+        let vits = if let Some(reference) = &mut sessions.vits {
             let sv_emb = sv_emb
                 .as_ref()
                 .ok_or_else(|| GSVError::from("Missing SV embedding for SoVITS reference"))?;
@@ -373,13 +453,12 @@ impl TTSModel {
     }
 
     fn process_ssl(
-        &mut self,
+        session: &mut Session,
         ref_audio_16k: &Array2<f32>,
     ) -> Result<ArrayBase<OwnedRepr<f32>, IxDyn>, GSVError> {
         let time = SystemTime::now();
-        let ssl_output = self
-            .ssl
-            .run(inputs!["ref_audio_16k" => TensorRef::from_array_view(ref_audio_16k).unwrap()])?;
+        let ssl_output =
+            session.run(inputs!["ref_audio_16k" => TensorRef::from_array_view(ref_audio_16k)?])?;
         debug!("SSL processing time: {:?}", time.elapsed()?);
         Ok(ssl_output["ssl_content"]
             .try_extract_array::<f32>()?
@@ -411,6 +490,50 @@ impl TTSModel {
     /// Cached reference tensors after [`Self::process_reference`].
     pub fn reference_data(&self) -> Option<Arc<ReferenceData>> {
         self.ref_data.clone()
+    }
+
+    /// Serialize the currently prepared reference without lowering feature precision.
+    pub fn encode_reference(&self) -> Result<Vec<u8>, GSVError> {
+        let reference = self
+            .ref_data
+            .as_deref()
+            .ok_or_else(|| GSVError::from("Reference data not initialized"))?;
+        Ok(serde_json::to_vec(reference).map_err(anyhow::Error::from)?)
+    }
+
+    /// Install a reference prepared for the same models and pronunciation inputs.
+    pub fn restore_reference(&mut self, bytes: &[u8]) -> Result<(), GSVError> {
+        let reference: ReferenceData =
+            serde_json::from_slice(bytes).map_err(anyhow::Error::from)?;
+        let split = self.reference_paths.vits.is_some();
+        let valid = match &reference.vits {
+            VitsReference::Features(ge) => {
+                split && !ge.is_empty() && ge.iter().all(|v| v.is_finite())
+            }
+            VitsReference::Audio(audio) => {
+                !split
+                    && audio.nrows() == 1
+                    && !audio.is_empty()
+                    && audio.iter().all(|v| v.is_finite())
+            }
+        };
+        if !valid
+            || reference.ref_seq.nrows() != 1
+            || reference.ref_seq.is_empty()
+            || reference.ref_bert.nrows() != reference.ref_seq.ncols()
+            || reference.ref_bert.is_empty()
+            || !reference.ref_bert.iter().all(|v| v.is_finite())
+            || reference.prompts.is_empty()
+            || reference.sv_emb.is_some() != self.reference_paths.sv.is_some()
+            || reference
+                .sv_emb
+                .as_ref()
+                .is_some_and(|sv| sv.is_empty() || !sv.iter().all(|v| v.is_finite()))
+        {
+            return Err(GSVError::from("Invalid cached reference tensors"));
+        }
+        self.ref_data = Some(Arc::new(reference));
+        Ok(())
     }
 
     /// Phoneme ids and BERT features for synthesis text.
@@ -745,6 +868,49 @@ impl TTSModel {
 #[cfg(test)]
 mod reference_tests {
     use super::*;
+
+    #[test]
+    fn serialized_reference_preserves_float_bits() {
+        let values = vec![
+            -0.0_f32,
+            f32::from_bits(1),
+            0.12345679,
+            -23.725014,
+            f32::MAX,
+        ];
+        let reference = ReferenceData {
+            ref_seq: Array2::from_elem((1, 1), 2),
+            ref_bert: Array2::from_shape_vec((1, values.len()), values.clone()).unwrap(),
+            vits: VitsReference::Features(
+                ArrayD::from_shape_vec(ndarray::IxDyn(&[1, values.len(), 1]), values.clone())
+                    .unwrap(),
+            ),
+            ssl_shape: vec![1, 768, 20],
+            prompts: ArrayD::from_elem(ndarray::IxDyn(&[1, 1, 2]), 10),
+            sv_emb: Some(
+                ArrayD::from_shape_vec(ndarray::IxDyn(&[1, values.len()]), values.clone()).unwrap(),
+            ),
+        };
+        let payload = serde_json::to_vec(&reference).unwrap();
+        let restored: ReferenceData = serde_json::from_slice(&payload).unwrap();
+        let VitsReference::Features(ge) = &restored.vits else {
+            panic!("expected ge")
+        };
+        for actual in [
+            restored.ref_bert.as_slice().unwrap(),
+            ge.as_slice().unwrap(),
+            restored.sv_emb.as_ref().unwrap().as_slice().unwrap(),
+        ] {
+            assert!(
+                actual
+                    .iter()
+                    .map(|v| v.to_bits())
+                    .eq(values.iter().map(|v| v.to_bits()))
+            );
+        }
+        assert_eq!(restored.ref_seq, reference.ref_seq);
+        assert_eq!(restored.prompts, reference.prompts);
+    }
 
     #[test]
     #[ignore = "requires a local v2Pro bundle with split reference VITS and two reference WAVs"]

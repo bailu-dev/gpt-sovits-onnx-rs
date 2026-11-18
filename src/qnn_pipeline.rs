@@ -12,7 +12,7 @@ impl TTSModel {
                 "QNN pipeline requires an ordinary VITS graph",
             ));
         }
-        if self.sovits_reference.is_none() {
+        if self.reference_paths.vits.is_none() {
             return Err(GSVError::from(
                 "HTP VITS requires cached reference features",
             ));
