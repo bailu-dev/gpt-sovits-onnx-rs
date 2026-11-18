@@ -598,13 +598,14 @@ impl TTSModel {
     }
 
     /// Run either the legacy growing decoder or the head-major shared-cache export.
-    fn run_t2s_s_decoder_loop(
+    fn run_t2s_s_decoder_loop<G>(
         &mut self,
         sampler: &mut Sampler,
         sampling_param: SamplingParams,
         mut y_vec: Vec<i64>,
         mut caches: Vec<LayerCache>,
         prefix_len: usize,
+        enter_compute: impl Fn() -> Option<G>,
         mut progress: impl FnMut(&[i64], bool) -> bool,
     ) -> Result<Option<ArrayBase<OwnedRepr<i64>, IxDyn>>, GSVError> {
         let mut idx = 0;
@@ -635,6 +636,9 @@ impl TTSModel {
         };
 
         loop {
+            let Some(compute) = enter_compute() else {
+                return Ok(None);
+            };
             let old_capacity = shared.as_ref().map(|cache| cache.capacity);
             let filled = prefill_length + idx + 1;
             let mut output = if let Some(cache) = &mut shared {
@@ -684,6 +688,7 @@ impl TTSModel {
             y_vec.push(sampled);
 
             let argmax = logits_sampler::argmax(&logits_scratch);
+            drop(compute);
 
             if idx + 1 >= MAX_DECODER_STEPS
                 || sampled == T2S_DECODER_EOS
@@ -753,17 +758,19 @@ impl TTSModel {
                 text_seq_vec,
                 ref_data,
                 sampling_param,
+                || Some(()),
                 |_, _| true,
             )?
             .expect("semantic synthesis continues through EOS"))
     }
 
-    fn synthesize_semantic_with_progress(
+    fn synthesize_semantic_with_progress<G>(
         &mut self,
         text_bert: &Array2<f32>,
         text_seq_vec: &[i64],
         ref_data: &ReferenceData,
         sampling_param: SamplingParams,
+        enter_compute: impl Fn() -> Option<G>,
         progress: impl FnMut(&[i64], bool) -> bool,
     ) -> Result<Option<ArrayD<i64>>, GSVError> {
         let text_seq: ArrayView2<'_, i64> =
@@ -785,6 +792,9 @@ impl TTSModel {
         let bert = bert.insert_axis(Axis(0)).to_owned();
 
         let caches = {
+            let Some(_compute) = enter_compute() else {
+                return Ok(None);
+            };
             let time = SystemTime::now();
             let mut fs_decoder_output = self.t2s_fs_decoder.run(inputs![
                 "x" => TensorRef::from_array_view(&x.as_standard_layout())?,
@@ -822,6 +832,7 @@ impl TTSModel {
             y_vec,
             caches,
             prefix_len,
+            enter_compute,
             progress,
         )?;
         debug!("T2S S Decoder all time: {:?}", time.elapsed()?);

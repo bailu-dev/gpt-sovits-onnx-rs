@@ -142,6 +142,32 @@ impl TTSModel {
         postprocess: PostprocessParams,
         options: TokenStreamOptions,
         cancelled: impl Fn() -> bool + Sync,
+        emit: impl FnMut(WavSpec, Vec<f32>) -> bool + Send,
+    ) -> Result<(), GSVError> {
+        self.synthesize_token_chunks_with_checkpoints(
+            text,
+            sampling,
+            lang,
+            postprocess,
+            options,
+            &cancelled,
+            || (!cancelled()).then_some(()),
+            emit,
+        )
+    }
+
+    /// Keep decoder and vocoder state while the caller pauses native compute.
+    /// The returned guard is held only during a compute stage. Returning
+    /// `None` ends synthesis, as does the cancellation predicate.
+    pub fn synthesize_token_chunks_with_checkpoints<G>(
+        &mut self,
+        text: &str,
+        sampling: SamplingParams,
+        lang: LangId,
+        postprocess: PostprocessParams,
+        options: TokenStreamOptions,
+        cancelled: impl Fn() -> bool + Sync,
+        enter_compute: impl Fn() -> Option<G> + Sync,
         mut emit: impl FnMut(WavSpec, Vec<f32>) -> bool + Send,
     ) -> Result<(), GSVError> {
         use crate::preprocessor::{clean::infer_lang_en, seg::pre_seg_text};
@@ -173,6 +199,7 @@ impl TTSModel {
             let (sender, receiver) = sync_channel::<Render>(1);
             let reference = &reference;
             let cancelled = &cancelled;
+            let enter_compute = &enter_compute;
             let renderer = &mut vocoder;
             let worker = scope.spawn(move || {
                 let mut output = PrefixAudio::default();
@@ -188,6 +215,9 @@ impl TTSModel {
                     if cancelled() {
                         break;
                     }
+                    let Some(compute) = enter_compute() else {
+                        break;
+                    };
                     let length = tokens.len();
                     let semantic = ArrayD::from_shape_vec(IxDyn(&[1, 1, length]), tokens)?;
                     let window_start = start_token * VITS_FRAMES_PER_TOKEN;
@@ -224,6 +254,7 @@ impl TTSModel {
                         (audio, window_start + start_frame)
                     };
                     let mut chunk = output.append(&audio, audio_start, final_chunk)?;
+                    drop(compute);
                     if final_chunk {
                         let silence = (spec.sample_rate as f32
                             * postprocess.fragment_interval.max(0.0))
@@ -255,10 +286,14 @@ impl TTSModel {
                     if cancelled() {
                         return Ok(());
                     }
-                    let Ok((_, phones, bert)) = self
-                        .text_processor
-                        .get_phone_and_bert_whole(&sentence, lang)
-                    else {
+                    let features = {
+                        let Some(_compute) = enter_compute() else {
+                            return Ok(());
+                        };
+                        self.text_processor
+                            .get_phone_and_bert_whole(&sentence, lang)
+                    };
+                    let Ok((_, phones, bert)) = features else {
                         continue;
                     };
                     let phones: Arc<[i64]> = phones.into();
@@ -273,6 +308,7 @@ impl TTSModel {
                         &phones,
                         reference,
                         sampling,
+                        enter_compute,
                         |tokens, final_chunk| {
                             if cancelled() {
                                 return false;

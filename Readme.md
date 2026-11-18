@@ -196,6 +196,14 @@ RTF 为合成耗时除以音频时长。
 Rust 调用方用 `TTSModel::from_bundle` 加载模型，再按上表选择接口。流式接口缺少对应的
 VITS 图时返回错误。[Rust 命令行示例](examples/gpt_sovits_demo.rs) · [Android JNI 示例](examples/gpt_sovits_demo_jni.rs)
 
+### 由宿主调度流式计算
+
+需要与其他模型共享计算资源的宿主可调用 `synthesize_token_chunks_with_checkpoints`。
+文本特征提取、T2S 解码和 VITS 生成都通过 `enter_compute` 获取计算许可。宿主可以在许可
+可用前等待，合成会保留当前解码和拼接状态。许可在交付 PCM 或等待下一阶段之前释放。
+该回调会从合成线程和 VITS 工作线程调用。返回 `None`、取消条件成立或 PCM 回调返回
+`false` 都会结束本次流式合成。
+
 ## 更新记录
 
 ### 2026-11
