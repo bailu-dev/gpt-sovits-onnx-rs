@@ -29,6 +29,11 @@ fn silence_len(sample_rate: u32, fragment_interval: f32) -> usize {
     }
 }
 
+pub(crate) fn finish_fragment(fragment: &mut Vec<f32>, pause_samples: usize) {
+    normalize_fragment(fragment);
+    fragment.resize(fragment.len() + pause_samples, 0.0);
+}
+
 /// Append trailing silence to each fragment after peak normalization.
 pub fn process_fragments(
     mut batches: Vec<Vec<Vec<f32>>>,
@@ -39,10 +44,7 @@ pub fn process_fragments(
 
     for batch in &mut batches {
         for fragment in batch.iter_mut() {
-            normalize_fragment(fragment);
-            if pad_len > 0 {
-                fragment.extend(std::iter::repeat_n(0.0f32, pad_len));
-            }
+            finish_fragment(fragment, pad_len);
         }
     }
 

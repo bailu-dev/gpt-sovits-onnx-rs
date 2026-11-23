@@ -36,6 +36,7 @@ static DATE: Lazy<Regex> =
 static YEAR: Lazy<Regex> = Lazy::new(|| regex(r"([0-9]+)年"));
 static TIME_RANGE: Lazy<Regex> = Lazy::new(|| regex(&format!(r"({CLOCK})[-~]({CLOCK})")));
 static TIME: Lazy<Regex> = Lazy::new(|| regex(CLOCK));
+static RATIO: Lazy<Regex> = Lazy::new(|| regex(&format!(r"({NUMBER}):({NUMBER})")));
 static TEMPERATURE: Lazy<Regex> = Lazy::new(|| regex(&format!(r"({NUMBER})(摄氏度|°C|℃|度)")));
 static QUALIFIED_RANGE: Lazy<Regex> = Lazy::new(|| {
     let units = measure_pattern();
@@ -136,6 +137,9 @@ pub(in crate::preprocessor) fn normalize_numbers(text: &str) -> String {
         format!("{}至{}", time(&c[1]), time(&c[2]))
     });
     let text = bounded_replace(&TIME, &text, |c| time(&c[0]));
+    let text = bounded_replace(&RATIO, &text, |c| {
+        format!("{}比{}", number_text(&c[1]), number_text(&c[2]))
+    });
     let text = QUALIFIED_RANGE.replace_all(&text, "${1}至${2}");
     let text = TEMPERATURE.replace_all(&text, |c: &Captures<'_>| {
         let (sign, number) = c[1].strip_prefix('-').map_or(("", &c[1]), |n| ("零下", n));

@@ -19,6 +19,7 @@ struct Render {
     start_token: usize,
     new_tokens: usize,
     final_chunk: bool,
+    pause_samples: usize,
 }
 
 struct PlaybackProgress {
@@ -210,6 +211,7 @@ impl TTSModel {
                     start_token,
                     new_tokens,
                     final_chunk,
+                    pause_samples,
                 } in receiver
                 {
                     if cancelled() {
@@ -256,10 +258,7 @@ impl TTSModel {
                     let mut chunk = output.append(&audio, audio_start, final_chunk)?;
                     drop(compute);
                     if final_chunk {
-                        let silence = (spec.sample_rate as f32
-                            * postprocess.fragment_interval.max(0.0))
-                            as usize;
-                        chunk.resize(chunk.len() + silence, 0.0);
+                        chunk.resize(chunk.len() + pause_samples, 0.0);
                         output = PrefixAudio::default();
                         if let Some(history) = &mut history {
                             *history = empty_flow_history();
@@ -291,12 +290,15 @@ impl TTSModel {
                             return Ok(());
                         };
                         self.text_processor
-                            .get_phone_and_bert_whole(&sentence, lang)
+                            .get_phone_and_bert_whole(&sentence.text, lang)
                     };
                     let Ok((_, phones, bert)) = features else {
                         continue;
                     };
                     let phones: Arc<[i64]> = phones.into();
+                    let pause_samples = sentence
+                        .pause_after
+                        .samples(spec.sample_rate, postprocess.fragment_interval);
                     let stream_sentence = phones.len() >= MIN_STREAM_PHONES;
                     prepared = true;
                     let mut block_tokens = options.block_tokens;
@@ -354,6 +356,7 @@ impl TTSModel {
                                     start_token,
                                     new_tokens,
                                     final_chunk,
+                                    pause_samples,
                                 })
                                 .is_ok()
                         },
@@ -371,6 +374,7 @@ impl TTSModel {
                                 start_token: 0,
                                 new_tokens,
                                 final_chunk: true,
+                                pause_samples,
                             })
                             .is_err()
                         {

@@ -2,11 +2,12 @@ mod merge;
 mod normalize;
 
 pub use merge::recovery_order;
+pub(crate) use merge::{concat_fragments, finish_fragment};
 
 /// Parameters mirroring Python `TTS.audio_postprocess` options.
 #[derive(Debug, Clone, Copy)]
 pub struct PostprocessParams {
-    /// Silence gap appended after each fragment, in seconds (default 0.3).
+    /// Base silence gap in seconds (default 0.3). Synthesis scales this gap for clauses and paragraphs.
     pub fragment_interval: f32,
     /// Whether to reorder batched fragments via `batch_index_list`.
     pub split_bucket: bool,

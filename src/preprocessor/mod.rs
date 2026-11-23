@@ -1,7 +1,7 @@
 // preprocessor/mod.rs — TextProcessor orchestration
 use anyhow::Result;
 use log::{debug, warn};
-use ndarray::{Array2, ArrayBase, Dim, OwnedRepr};
+use ndarray::Array2;
 
 pub mod bert;
 pub mod clean;
@@ -28,7 +28,7 @@ use crate::preprocessor::{
     en::g2p_en::G2pEn,
     g2p::{G2pDeps, g2p_spans},
     phoneme_finalize::{ChunkInput, ChunkOutput, needs_short_retry},
-    seg::pre_seg_text,
+    seg::{Pause, pre_seg_text},
     zh::g2pw::G2PW,
 };
 use jieba_rs::Jieba;
@@ -56,17 +56,28 @@ impl TextProcessor {
         text: &str,
         lang_id: LangId,
     ) -> Result<Vec<(String, Vec<i64>, Array2<f32>)>> {
+        Ok(self
+            .prepare_speech_chunks(text, lang_id)?
+            .into_iter()
+            .map(|(output, _)| (output.norm_text, output.phone_ids, output.bert))
+            .collect())
+    }
+
+    pub(crate) fn prepare_speech_chunks(
+        &mut self,
+        text: &str,
+        lang_id: LangId,
+    ) -> Result<Vec<(ChunkOutput, Pause)>> {
         let chunks = pre_seg_text(text, infer_lang_en(text));
-        let mut result: Vec<(String, Vec<i64>, ArrayBase<OwnedRepr<f32>, Dim<[usize; 2]>>)> =
-            Vec::with_capacity(chunks.len());
+        let mut result = Vec::with_capacity(chunks.len());
 
         for chunk in chunks {
-            debug!("Processing chunk: {}", chunk);
-            let cleaned = normalize_input(&chunk)?;
+            debug!("Processing chunk: {}", chunk.text);
+            let cleaned = normalize_input(&chunk.text)?;
             match self.process_chunk(&cleaned, &cleaned.text, lang_id, false) {
-                Ok(Some(output)) => result.push((output.norm_text, output.phone_ids, output.bert)),
+                Ok(Some(output)) => result.push((output, chunk.pause_after)),
                 Ok(None) => {}
-                Err(e) => warn!("Failed to process chunk '{}': {}", chunk, e),
+                Err(e) => warn!("Failed to process chunk '{}': {}", chunk.text, e),
             }
         }
 

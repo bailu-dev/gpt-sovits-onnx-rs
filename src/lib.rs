@@ -859,20 +859,28 @@ impl TTSModel {
             .as_ref()
             .ok_or_else(|| GSVError::from("Reference data not initialized"))?
             .clone();
-        let sentences = self.text_processor.get_phone_and_bert(text, lang_id)?;
-        let mut fragments = Vec::with_capacity(sentences.len());
-        for (_, phones, bert) in sentences {
-            let semantic = self.synthesize_semantic(&bert, &phones, &reference, sampling_param)?;
-            let samples = self
+        let chunks = self.text_processor.prepare_speech_chunks(text, lang_id)?;
+        let spec = self.output_spec;
+        let mut fragments = Vec::with_capacity(chunks.len());
+        for (chunk, pause) in chunks {
+            let semantic = self.synthesize_semantic(
+                &chunk.bert,
+                &chunk.phone_ids,
+                &reference,
+                sampling_param,
+            )?;
+            let mut samples = self
                 .sovits
                 .as_mut()
                 .expect("vocoder is available outside the pipeline")
-                .render_from_frame(&phones, &semantic, &reference, 0)?;
+                .render_from_frame(&chunk.phone_ids, &semantic, &reference, 0)?;
+            postprocess::finish_fragment(
+                &mut samples,
+                pause.samples(spec.sample_rate, postprocess_params.fragment_interval),
+            );
             fragments.push(samples);
         }
-        let spec = self.output_spec;
-        let samples = audio_postprocess(vec![fragments], spec.sample_rate, &postprocess_params, None);
-        Ok((spec, samples))
+        Ok((spec, postprocess::concat_fragments(fragments)))
     }
 }
 

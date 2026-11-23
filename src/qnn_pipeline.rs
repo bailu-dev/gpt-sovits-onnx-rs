@@ -1,5 +1,5 @@
 use crate::vocoder::qnn::{QnnVocoder, report};
-use crate::{GSVError, LangId, SamplingParams, TTSModel};
+use crate::{GSVError, LangId, PostprocessParams, SamplingParams, TTSModel};
 use hound::WavSpec;
 use ndarray::ArrayD;
 use std::{path::Path, sync::mpsc::sync_channel};
@@ -70,20 +70,21 @@ impl TTSModel {
             .ok_or_else(|| GSVError::from("Reference data not initialized"))?
             .clone();
         let started = std::time::Instant::now();
-        let sentences = self.text_processor.get_phone_and_bert(text, lang)?;
+        let chunks = self.text_processor.prepare_speech_chunks(text, lang)?;
         let spec = self.output_spec;
+        let fragment_interval = PostprocessParams::default().fragment_interval;
         let mut vocoder = self
             .sovits
             .take()
             .expect("vocoder is available outside the pipeline");
         let result = std::thread::scope(|scope| {
-            let (sender, receiver) = sync_channel::<(Vec<i64>, ArrayD<i64>)>(1);
+            let (sender, receiver) = sync_channel::<(Vec<i64>, ArrayD<i64>, usize)>(1);
             let reference = &reference;
             let cancelled = &cancelled;
             let renderer = &mut vocoder;
             let worker = scope.spawn(move || {
                 let mut first_pcm = true;
-                for (phones, tokens) in receiver {
+                for (phones, tokens, pause_samples) in receiver {
                     if cancelled() {
                         break;
                     }
@@ -91,7 +92,7 @@ impl TTSModel {
                         &phones,
                         &tokens,
                         reference,
-                        spec.sample_rate,
+                        pause_samples,
                         |samples| {
                             if cancelled() {
                                 return false;
@@ -113,12 +114,22 @@ impl TTSModel {
                 Ok(())
             });
             let produce = || -> Result<(), GSVError> {
-                for (_, phones, bert) in sentences {
+                for (chunk, pause) in chunks {
                     if cancelled() {
                         break;
                     }
-                    let tokens = self.synthesize_semantic(&bert, &phones, reference, sampling)?;
-                    if cancelled() || sender.send((phones, tokens)).is_err() {
+                    let tokens = self.synthesize_semantic(
+                        &chunk.bert,
+                        &chunk.phone_ids,
+                        reference,
+                        sampling,
+                    )?;
+                    let pause_samples = pause.samples(spec.sample_rate, fragment_interval);
+                    if cancelled()
+                        || sender
+                            .send((chunk.phone_ids, tokens, pause_samples))
+                            .is_err()
+                    {
                         break;
                     }
                 }

@@ -44,23 +44,21 @@ impl Vocoder {
         text_seq: &[i64],
         pred_semantic: &ArrayD<i64>,
         reference: &ReferenceData,
-        sample_rate: u32,
+        pause_samples: usize,
         mut emit: impl FnMut(Vec<f32>) -> bool,
     ) -> Result<bool, GSVError> {
-        let postprocess = crate::PostprocessParams::default();
         if !self.latent_history
             && pred_semantic.shape()[2] * VITS_FRAMES_PER_TOKEN >= qnn::WINDOW
             && let (Some(htp), VitsReference::Features(ge)) = (&mut self.htp, &reference.vits)
         {
             let text_seq = ArrayView2::from_shape((1, text_seq.len()), text_seq)?;
-            let silence = (sample_rate as f32 * postprocess.fragment_interval) as usize;
             let mut emitted = false;
             match htp.render_windows(text_seq, pred_semantic, ge, |samples, last| {
                 // The W8A16 generator's final Tanh/QDQ already bounds its PCM.
                 let mut audio = samples.to_vec();
                 Self::finish_pcm(&mut audio, samples.len());
                 if last {
-                    audio.resize(audio.len() + silence, 0.0);
+                    audio.resize(audio.len() + pause_samples, 0.0);
                 }
                 emitted = true;
                 emit(audio)
@@ -75,13 +73,9 @@ impl Vocoder {
                 }
             }
         }
-        let audio = self.render_from_frame(text_seq, pred_semantic, reference, 0)?;
-        Ok(emit(crate::audio_postprocess(
-            vec![vec![audio]],
-            sample_rate,
-            &postprocess,
-            None,
-        )))
+        let mut audio = self.render_from_frame(text_seq, pred_semantic, reference, 0)?;
+        crate::postprocess::finish_fragment(&mut audio, pause_samples);
+        Ok(emit(audio))
     }
 
     pub(crate) fn supports_stream_tail(&self) -> bool {

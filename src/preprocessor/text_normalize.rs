@@ -69,8 +69,8 @@ pub fn text_normalize_zh(text: &str) -> String {
 }
 
 const REP_MAP_ZH: &[(&str, &str)] = &[
-    ("：", ","),
-    ("；", ","),
+    (":", ","),
+    (";", ","),
     ("，", ","),
     ("。", "."),
     ("！", "!"),
@@ -102,7 +102,10 @@ mod tests {
     fn question_marks_keep_sentence_boundaries() {
         let text = text_normalize("风凉吗？午饭吃了吗？我们走走吧。");
         assert_eq!(
-            super::super::seg::pre_seg_text(&text, false),
+            super::super::seg::pre_seg_text(&text, false)
+                .into_iter()
+                .map(|chunk| chunk.text)
+                .collect::<Vec<_>>(),
             vec!["。风凉吗?", "午饭吃了吗?", "我们走走吧."]
         );
     }
@@ -110,5 +113,13 @@ mod tests {
     #[test]
     fn mandarin_normalization_matches_python_spacing() {
         assert_eq!(text_normalize_zh("问题, 请修复它。"), "问题,请修复它.");
+    }
+
+    #[test]
+    fn mandarin_keeps_clause_punctuation_and_verbalizes_numeric_colons() {
+        assert_eq!(
+            text_normalize_zh("检测:基线；检查：平滑;继续。时间12：30，比例16:9。"),
+            "检测,基线,检查,平滑,继续.时间十二点半,比例十六比九."
+        );
     }
 }
