@@ -1,15 +1,53 @@
 # 模型导出与部署
 
-## 快速开始
+从 GPT-SoVITS 检查点导出模型时，先生成普通 ONNX 包，再按需要构建流式 VITS。
+已有模型包可以直接使用[项目快速开始](../Readme.md#快速开始)或[校验命令](#流式-vits-导出)。
 
-macOS 和 Android 的对话场景都推荐 v2Pro CPU Adaptive。先在 macOS 导出模型，再在目标平台构建和运行。
+## 从权重导出
 
-| 目标平台 | 推荐导出参数 | 构建与运行 |
-| --- | --- | --- |
-| macOS | `05_export.sh --quant --profile quality --shared-kv --preoptimize-cpu` | [导出命令](../Readme.md#1-在-macos-导出模型) · [macOS 运行](../Readme.md#3-macos-构建与使用) |
-| Android | `05_export.sh --quant --profile mobile --shared-kv --preoptimize-cpu` | [导出命令](../Readme.md#1-在-macos-导出模型) · [Android 构建与运行](../Readme.md#4-android-构建与使用) |
+在 GPT-SoVITS ONNX RS 项目根目录运行。macOS 开发机需安装 Git、Rust、CMake、FFmpeg 和 `uv`。
+设备运行所需的 Android 工具链见 [Android 真机指南](../Readme.md#android-真机构建与使用)。
 
-两个导出命令都先生成普通模型包。对话部署继续[生成流式模型包](../Readme.md#2-生成流式模型包)，运行时使用 `--stream`。
+```bash
+export ENV_MANAGER=uv
+./scripts/export/01_clone.sh --upstream-ref 04a44eb977586645f33594b72af13a035a2056c6
+./scripts/export/02_patch.sh
+./scripts/export/03_setup_env.sh --source HF
+./scripts/export/04_download_models.sh --version v2Pro
+```
+
+已有 `gpt-sovits-upstream/.venv` 且具备上游依赖和 [ONNX 工具](requirements.txt)时，
+可复用该环境执行后续步骤。下面的命令生成 `mobile` 普通包。
+使用 `quality` 作为精度优先配置时，将 `--profile mobile` 换成 `--profile quality`。
+
+```bash
+./scripts/export/05_export.sh --version v2Pro --export-name v2pro-mobile \
+  --quant --profile mobile --shared-kv --preoptimize-cpu
+MODEL_DIR=gpt-sovits-upstream/onnx-patched/v2pro-mobile
+PYTHON=gpt-sovits-upstream/.venv/bin/python
+```
+
+### 生成流式模型包
+
+保留上面的 `$MODEL_DIR` 作为整段推理用包。先拆出参考音图，再生成流式 VITS，
+两步分别输出到新的目录。
+
+```bash
+CACHED_DIR="${MODEL_DIR}-cached"
+STREAM_DIR="${MODEL_DIR}-stream"
+"$PYTHON" scripts/vits_dynamic.py "$MODEL_DIR/vits.onnx" --split-reference-dir "$CACHED_DIR"
+rsync -a --exclude='/vits.onnx' --exclude='/vits_ref.onnx' \
+  --exclude='/ref.wav' --exclude='/ref.txt' --exclude='/reference.wav' --exclude='/reference.txt' \
+  "$MODEL_DIR/" "$CACHED_DIR/"
+mkdir -p "$STREAM_DIR"
+rsync -a --exclude='/vits.onnx' "$CACHED_DIR/" "$STREAM_DIR/"
+"$PYTHON" scripts/vits_streaming.py "$CACHED_DIR/vits.onnx" "$STREAM_DIR/vits.onnx"
+./scripts/export/validate_bundle.sh --python "$PYTHON" \
+  --bundle-dir "$STREAM_DIR" --expect-v2pro --expect-streaming
+```
+
+用流式推理 CLI 时，将 `--model-path` 指向 `$STREAM_DIR` 并传入 `--stream`。
+整段推理可使用 `$MODEL_DIR` 或拆出参考图后的 `$CACHED_DIR`。
 
 ## 流式 VITS 导出
 
@@ -38,8 +76,7 @@ Pro 系列模型接口和说话人模型。已有模型包可以用本地已安�
 
 v2Pro 和 v2ProPlus 可以用 `vits_dynamic.py --split-reference-dir` 将 VITS 拆成
 `vits_ref.onnx` 和使用 `ge` 的 `vits.onnx`。引擎在加载或切换参考音时计算一次
-`ge`，后续合成复用。拆图输出目录同时补齐其他模型后可用于普通推理，也是快速开始里
-`$CACHED_DIR` 的来源。
+`ge`，后续合成复用。将其他 ONNX 文件复制到拆图输出目录后，即可用 `$CACHED_DIR` 进行整段推理。
 
 `--preoptimize-cpu` 在量化之后对 BERT、中英文 G2P 和适用的 T2S 图做 ORT Extended
 预融合。已有模型包可用 `python scripts/preoptimize_cpu.py "$CACHED_DIR"` 更新。
@@ -48,8 +85,8 @@ v2Pro 和 v2ProPlus 可以用 `vits_dynamic.py --split-reference-dir` 将 VITS �
 
 ## Android CPU 低延迟导出
 
-快速开始的 `mobile` 用于移动端部署。需要提高精度时，可以选择 `quality`。
-`05_export.sh` 默认输出浮点图，传入 `--quant` 才应用所选配置。
+`mobile` 是 Android CPU 部署配置。`05_export.sh` 默认输出浮点图，传入 `--quant`
+后应用所选量化配置。
 
 | 配置 | BERT / G2PW | T2S 首步 | T2S 逐 token | VITS |
 | --- | --- | --- | --- | --- |
@@ -63,6 +100,54 @@ v2Pro 和 v2ProPlus 可以用 `vits_dynamic.py --split-reference-dir` 将 VITS �
 每个 `.npz` 包含 `text_seq`、`pred_semantic`、`ref_audio` 和 Pro 系列的 `sv_emb`。
 更低位宽的 INT2、INT3 属于实验候选。评估时可对照图大小、首包和连续合成耗时、
 语义 token、PCM、字错率及音色相似度。
+
+## Android App 接入
+
+交叉编译目标为 `aarch64-linux-android`（`arm64-v8a`、API 28）。`build_for_android.sh`
+输出的 `libonnxruntime.so` 来自全量 ORT 1.30.0 Android AAR，支持量化图用到的 contrib
+算子。将 ORT、`libc++_shared.so` 和应用自己的 JNI 库放进 Gradle 的
+`src/main/jniLibs/arm64-v8a/` 或通过 `sourceSets` 指定目录。使用绝对文件路径
+`ort::init_from` 时，可采用 `jniLibs.useLegacyPackaging = true`，安装后从
+`applicationInfo.nativeLibraryDir` 取得 ORT 文件。交付 APK 时检查各 AArch64 ELF 的
+16 KiB 页对齐与 APK 的原生库条目。
+
+### 整段 JNI 示例
+
+[`gpt_sovits_demo_jni.rs`](../examples/gpt_sovits_demo_jni.rs) 演示从 Java 传入模型路径、
+参考音和文本，再取得完整的 32 kHz 单声道 Float32 PCM。它导出的 JNI 名称对应
+`com.example.gpt_sovits_demo.MainActivity`，移植到自己的包名时同步调整符号。
+配套的 Java 声明如下，方法放在该类中。
+
+```java
+static { System.loadLibrary("gpt_sovits_demo_jni"); }
+
+static native long initModel(String g2pW, String g2pEnDir, String vits, String ssl,
+    String t2sEncoder, String t2sFirstDecoder, String t2sStepDecoder, String bert, String sv);
+static native boolean processReferenceSync(long model, String wav, String transcript, long language);
+static native float[] runInferenceSync(long model, String text, long language);
+static native void freeModel(long model);
+```
+
+用普通 VITS 图初始化。v2Pro 系列的 `sv` 传入 `sv.onnx` 的路径，v2 传入空字符串。
+语言值 `0` 选择普通话／英文自动处理，`1` 选择粤语模式。宿主在工作线程依序初始化、
+处理参考音、合成和释放；模型路径指向磁盘上的文件，`g2pEnDir` 指向 `g2p_en/`。
+共享线程池的初始化顺序可以参考 [Android CLI](../examples/gpt_sovits_demo.rs) 的
+`init_android_ort`。
+
+### Adaptive 流式宿主
+
+使用带 `stream_start_frame` 的流式包并保留模型目录结构，包括 `g2p_en/`、
+拆分参考图 `vits_ref.onnx` 和模型引用的外部数据文件。可先运行
+`validate_bundle.sh --bundle-dir PATH --expect-v2pro --expect-streaming` 核对模型。
+宿主在创建任何会话前从本地库路径初始化 ORT，选择 `shared-ort-pool` 时同时配置全局线程池。
+用 `TTSModel::from_bundle_lazy_reference` 和 `process_reference_sync` 准备模型及参考音，
+再调用 `synthesize_token_chunks_sync`。用 `InferParams::from_bundle` 读取包内的采样参数，
+以回调中的 `WavSpec` 配置播放端。
+
+Android `TextToSpeechService` 可把 Float32 PCM 转成小端 PCM16，按
+`SynthesisCallback.getMaxBufferSize()` 分块交给系统。模型的 PCM 回调可能在 Rust 工作线程执行，
+通过有界队列把 PCM 送回 Android 合成线程后再调用系统回调；`onStop` 设置合成的取消状态。
+[Android 回调契约](https://developer.android.com/reference/android/speech/tts/SynthesisCallback)
 
 ## 运行参数与验证
 
@@ -116,7 +201,7 @@ S25 Ultra 实测环境为 ORT 1.30.0、QNN EP 2.7.0、QAIRT 2.51.0 和 burst 模
 
 ### 准备同权重模型和校准输入
 
-使用快速开始的 `$CACHED_DIR` 作为普通 CPU 包。用同一套权重另导出完整浮点 VITS，
+使用上面的 `$CACHED_DIR` 作为普通 CPU 包。用同一套权重另导出完整浮点 VITS，
 保留 `ConvTranspose`，作为 HTP 生成器的输入。准备多条代表性中长句，每个参与校准的模型段
 至少需要 64 个语义 token。
 
@@ -129,14 +214,14 @@ mkdir -p target
 cargo run --release --example gpt_sovits_demo -- \
   --model-path "$CACHED_DIR" --ref-audio /path/to/ref.wav --ref-text '<参考音频的准确转录>' \
   --text '<多条代表性中长句>' --seed 42 --dump-qnn-inputs target/qnn-calibration.json
-python scripts/vits_generator.py "$QNN_SOURCE" target/qnn-generator \
+"$PYTHON" scripts/vits_generator.py "$QNN_SOURCE" target/qnn-generator \
   --frames 128 --htp-calibration-inputs target/qnn-calibration.json --htp-activation-bits 16
 
 QNN_DIR=target/qnn-bundle
 mkdir -p "$QNN_DIR"
 rsync -a "$CACHED_DIR/" "$QNN_DIR/"
 cp target/qnn-generator/vits_prefix.onnx target/qnn-generator/vits_generator_htp.onnx "$QNN_DIR/"
-./scripts/export/validate_bundle.sh --bundle-dir "$QNN_DIR" --expect-qnn
+./scripts/export/validate_bundle.sh --python "$PYTHON" --bundle-dir "$QNN_DIR" --expect-qnn
 ```
 
 可重复传入 `--htp-calibration-inputs` 合并多份 JSON，或用 `--htp-calibration-dir` 指定
