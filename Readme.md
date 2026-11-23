@@ -1,5 +1,7 @@
 # GPT-SoVITS ONNX RS
 
+**简体中文** · [English](README.en.md)
+
 GPT-SoVITS ONNX RS 是 [GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) 的优化推理库。
 项目提供改进的 ONNX 导出脚本和基于 Rust、ONNX Runtime 的 CPU 推理运行时，支持 x86-64
 和 arm64。以 v2Pro 为例，实测 CPU 句内流式合成在 Galaxy S25 Ultra 上约为实时的 **3.7 倍**，
