@@ -27,10 +27,7 @@ pub fn merge_span_results(
             validate_word2ph(&span.text, &span.word2ph, phone_len)?;
         }
 
-        let bert_feat = match span.lang {
-            Lang::Zh => bert.get_bert(&span.text, &span.word2ph, phone_len, Lang::Zh)?,
-            Lang::En => bert.get_bert(&span.text, &span.word2ph, phone_len, Lang::En)?,
-        };
+        let bert_feat = bert.get_bert(&span.text, &span.word2ph, phone_len, span.lang)?;
         if bert_feat.shape()[0] != phone_len {
             let error_msg = format!(
                 "BERT length mismatch for '{}': expected {}, got {}",

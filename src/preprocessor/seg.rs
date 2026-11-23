@@ -2,8 +2,10 @@
 
 use regex::Regex;
 
+use super::lang::contains_kana;
+
 pub const SPLITS: &[char] = &[
-    '，', '。', '？', '！', ',', '.', '?', '!', '~', ':', '：', ';', '；', '—', '…',
+    '，', '。', '､', '｡', '？', '！', ',', '.', '?', '!', '~', ':', '：', ';', '；', '—', '…',
 ];
 
 /// Collapse consecutive punctuation (Python `replace_consecutive_punctuation`).
@@ -42,12 +44,13 @@ impl Pause {
 pub(crate) struct SpeechChunk {
     pub(crate) text: String,
     pub(crate) pause_after: Pause,
+    pub(crate) line_has_kana: bool,
 }
 
 fn punctuation_pause(c: char) -> Option<Pause> {
     match c {
         '：' | ':' | '；' | ';' => Some(Pause::Clause),
-        '。' | '！' | '？' | '．' | '.' | '!' | '?' | '…' => Some(Pause::Sentence),
+        '。' | '｡' | '！' | '？' | '．' | '.' | '!' | '?' | '…' => Some(Pause::Sentence),
         _ => None,
     }
 }
@@ -156,6 +159,7 @@ fn spoken_text(chars: &[char]) -> Option<String> {
 }
 
 fn split_sentence_chunks(line: &str) -> Vec<SpeechChunk> {
+    let line_has_kana = contains_kana(line);
     let chars: Vec<char> = line.chars().collect();
     let mut out = Vec::new();
     let (mut start, mut index, mut parentheses) = (0, 0, 0usize);
@@ -208,7 +212,11 @@ fn split_sentence_chunks(line: &str) -> Vec<SpeechChunk> {
                 .collect::<String>()
                 .trim()
                 .to_owned();
-            out.push(SpeechChunk { text, pause_after });
+            out.push(SpeechChunk {
+                text,
+                pause_after,
+                line_has_kana,
+            });
             start = end;
         }
         index = if internal { index + 1 } else { end };
@@ -217,6 +225,7 @@ fn split_sentence_chunks(line: &str) -> Vec<SpeechChunk> {
         out.push(SpeechChunk {
             text,
             pause_after: Pause::Sentence,
+            line_has_kana,
         });
     }
     out
@@ -287,6 +296,7 @@ pub(crate) fn pre_seg_text(text: &str, lang_en: bool) -> Vec<SpeechChunk> {
                 chunks.push(SpeechChunk {
                     text: chunk,
                     pause_after,
+                    line_has_kana: sentence.line_has_kana,
                 });
             }
         }
@@ -437,6 +447,25 @@ mod tests {
                 true
             )),
             ["This sentence.", "continues on a new line."]
+        );
+    }
+
+    #[test]
+    fn japanese_context_stays_with_the_original_line() {
+        let chunks = pre_seg_text("今日は雨です。東京。\r\n東京。\nｶﾞｯﾂ：入口｡", false);
+        let context: Vec<_> = chunks
+            .iter()
+            .map(|chunk| (chunk.text.as_str(), chunk.line_has_kana, chunk.pause_after))
+            .collect();
+        assert_eq!(
+            context,
+            [
+                ("今日は雨です。", true, Pause::Sentence),
+                ("東京。", true, Pause::Sentence),
+                ("東京。", false, Pause::Sentence),
+                ("ｶﾞｯﾂ：", true, Pause::Clause),
+                ("入口｡", true, Pause::Sentence),
+            ]
         );
     }
 

@@ -5,9 +5,10 @@ use log::warn;
 
 use crate::preprocessor::{
     en::{EnSentence, EnWord, g2p_en::G2pEn, normalize::text_normalize_en},
+    ja::{self, Japanese},
     lang::{Lang, LangId},
     lang_segment::LangSpan,
-    phoneme_finalize::finalize_span_zh,
+    phoneme_finalize::{finalize_span_zh, phones_to_ids},
     text_normalize::text_normalize_zh,
     zh::{ZhMode, ZhSentence, g2pw::G2PW},
 };
@@ -25,6 +26,7 @@ pub struct G2pDeps<'a> {
     pub g2pw: &'a mut G2PW,
     pub g2p_en: &'a mut G2pEn,
     pub jieba: &'a Jieba,
+    pub(crate) japanese: &'a Japanese,
 }
 
 pub fn g2p_spans(
@@ -37,6 +39,7 @@ pub fn g2p_spans(
         let normalized = match span.lang {
             Lang::Zh => text_normalize_zh(&span.text),
             Lang::En => text_normalize_en(&span.text),
+            Lang::Ja => ja::normalize(&span.text),
         };
         if normalized.trim().is_empty() {
             continue;
@@ -83,6 +86,17 @@ pub fn g2p_spans(
                     phone_ids: en.phone_ids,
                     lang: Lang::En,
                 });
+            }
+            Lang::Ja => {
+                let phones = deps.japanese.phones(&normalized)?;
+                if !phones.is_empty() {
+                    results.push(SpanResult {
+                        phone_ids: phones_to_ids(&phones, &normalized),
+                        text: normalized,
+                        word2ph: Vec::new(),
+                        lang: Lang::Ja,
+                    });
+                }
             }
         }
     }

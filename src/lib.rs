@@ -208,6 +208,7 @@ impl TTSModel {
     /// `stream_start_frame` for [`Self::synthesize_token_chunks_sync`].
     /// A decoder with cached `ge` loads `vits_ref.onnx` from the same directory.
     /// The BERT, Chinese G2P, and English G2P paths are optional.
+    /// Japanese synthesis loads `g2p_ja/` beside the SoVITS graph on first use.
     pub fn new<P: AsRef<Path>>(
         sovits_path: P,
         ssl_path: P,
@@ -306,7 +307,8 @@ impl TTSModel {
                 G2PW::new(g2pw_path)?,
                 G2pEn::new(g2p_en_path)?,
                 BertModel::new(bert_path)?,
-            )?,
+            )?
+            .with_japanese_dictionary(sovits_path.with_file_name("g2p_ja")),
             sovits: Some(Vocoder::new(sovits)),
             reference_paths,
             reference_sessions,
@@ -370,7 +372,7 @@ impl TTSModel {
     ///
     /// `ref_text` is input ref text
     ///
-    /// `lang_id` can be LangId::Auto(Mandarin) or LangId::AutoYue（cantonese）
+    /// `lang_id` controls how the reference transcript is read.
     ///
     pub async fn process_reference<P: AsRef<Path>>(
         &mut self,
@@ -471,7 +473,7 @@ impl TTSModel {
     ///
     /// `ref_text` is input ref text
     ///
-    /// `lang_id` can be LangId::Auto(Mandarin) or LangId::AutoYue（cantonese）
+    /// `lang_id` controls how the reference transcript is read.
     ///
     pub fn process_reference_sync<P: AsRef<Path>>(
         &mut self,

@@ -13,6 +13,20 @@ generates 32 kHz mono audio in the reference voice. Rust apps can receive PCM
 in chunks or as a complete utterance. The CLI example writes a WAV file using
 the same models.
 
+## Audio samples
+
+All four samples use the project's Bailu reference recording and the v2Pro
+`quality` bundle in streaming mode. The Cantonese sample uses `--lang yue`.
+Use the recording and transcript together to try the quick start below.
+[Bailu reference WAV](doc/audio/bailu-09.wav) · [Exact transcript](doc/audio/bailu-09.txt)
+
+| Language | Text | Audio |
+| --- | --- | --- |
+| Mandarin | 雨停以后，我们沿着河边慢慢走。远处灯塔的光，照在安静的水面上。 | [Listen to WAV](doc/audio/mandarin.wav) |
+| Cantonese | 雨停咗之後，我哋沿住河邊慢慢行。遠處燈塔嘅燈光，照住靜靜嘅水面。 | [Listen to WAV](doc/audio/cantonese.wav) |
+| English | After the rain stopped, we walked slowly along the river. The lighthouse cast its light across the quiet water. | [Listen to WAV](doc/audio/english.wav) |
+| Japanese | 雨がやんだあと、私たちは川沿いをゆっくり歩きました。灯台の光が、静かな水面に映っていました。 | [Listen to WAV](doc/audio/japanese.wav) |
+
 ## How it speeds up inference
 
 - **ONNX graphs designed for CPU inference.** Separate graphs handle the first
@@ -53,7 +67,7 @@ skipped words, so split long passages into sentences.
 | Feature | Support |
 | --- | --- |
 | Models | Whole-utterance synthesis with v2, v2Pro, and v2ProPlus. Within-sentence streaming with v2Pro has been tested on macOS and Android CPUs. |
-| Languages | Mandarin, English, and mixed Mandarin and English. For Cantonese, use `--lang yue` in the CLI or `LangId::AutoYue` in Rust. |
+| Languages | Mandarin, English, Japanese, and automatic mixed-language reading. For Cantonese, use `--lang yue` in the CLI or `LangId::AutoYue` in Rust. |
 | Output | Chunked or whole-utterance PCM through the Rust API. The CLI writes WAV files. |
 | Platforms | x86-64 and arm64 CPUs. The Android example targets `arm64-v8a`. |
 | Reference voices | Change the reference WAV and transcript at runtime. Pro models use `sv.onnx` to extract speaker features. |
@@ -73,14 +87,15 @@ uvx --from huggingface_hub hf download mikv39/gpt-sovits-onnx-custom \
 MODEL_DIR="$MODEL_ROOT/quality"
 ```
 
-Use a mono PCM16 reference WAV, ideally 3–10 seconds long, and pass its exact
+Use the included Bailu reference to reproduce the English sample. For your
+own voice, use a mono PCM16 WAV, ideally 3–10 seconds long, and pass its exact
 transcript to `--ref-text`.
 
 ```bash
 cargo run --release --example gpt_sovits_demo -- \
-  --model-path "$MODEL_DIR" --stream \
-  --ref-audio /path/to/voice.wav --ref-text '<exact reference transcript>' \
-  --text 'When the rain stops, we will follow the river to the lighthouse.' \
+  --model-path "$MODEL_DIR" --stream --block-tokens 8 --seed 42 \
+  --ref-audio doc/audio/bailu-09.wav --ref-text "$(cat doc/audio/bailu-09.txt)" \
+  --text 'After the rain stopped, we walked slowly along the river. The lighthouse cast its light across the quiet water.' \
   --output speech.wav
 ```
 
@@ -88,6 +103,29 @@ cargo run --release --example gpt_sovits_demo -- \
   [Whole-utterance setup](https://huggingface.co/mikv39/gpt-sovits-onnx-custom#run)
 - **Run on Android** with the [demo app or CLI](#build-and-run-on-android).
 - **Export your own weights or quantized models** with the [export guide (Chinese)](scripts/README.md#从权重导出).
+
+## Japanese and mixed-language input
+
+Install the NAIST-JDic dictionary into the selected model directory before
+synthesizing Japanese. The script downloads and verifies a pinned release,
+then extracts it into `g2p_ja/`. The Rust runtime loads it when needed.
+Streaming and whole-utterance synthesis use the same dictionary.
+
+```bash
+./scripts/prepare_japanese_dictionary.sh "$MODEL_DIR"
+cargo run --release --example gpt_sovits_demo -- \
+  --model-path "$MODEL_DIR" --stream --block-tokens 8 --seed 42 --lang ja --ref-lang auto \
+  --ref-audio doc/audio/bailu-09.wav --ref-text "$(cat doc/audio/bailu-09.txt)" \
+  --text '雨がやんだあと、私たちは川沿いをゆっくり歩きました。灯台の光が、静かな水面に映っていました。' \
+  --output japanese.wav
+```
+
+In the default `--lang auto` mode, kana makes the Han characters on that
+original input line read as Japanese. English words use the English frontend.
+Han-only lines default to Mandarin. Use `--lang ja` for Han-only Japanese text
+such as 「大丈夫」. The reference transcript has its own `--ref-lang` option,
+which defaults to `auto`. In Rust, use `LangId::Auto` or `LangId::Japanese`.
+[Dictionary release](https://github.com/jpreprocess/jpreprocess/releases/tag/v0.15.0)
 
 ## Build and run on Android
 

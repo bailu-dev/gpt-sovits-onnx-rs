@@ -6,12 +6,14 @@ use regex::Regex;
 pub(crate) static TOKEN_REGEX: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?x)
-        [\p{Han}]+ |              # Chinese characters
+        [\p{Han}]+ |              # Han characters
+        [\p{Hiragana}\p{Katakana}ーｰ\u{3099}\u{309A}\u{FF9E}\u{FF9F}]+ |
         [a-zA-Z]+(?:['-][a-zA-Z]+)* | # English words with optional apostrophes/hyphens
         [+-]?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)%? | # Numbers, decimals and percentages
         °C | # Temperature suffix
         \p{Greek} |
         [.,!?;:()\[\]<>\-\"$/…~+×÷=⁰¹²³⁴-⁹ˣʸⁿ①-⑩℃\u{3001}\u{3002}\u{FF01}\u{FF1F}\u{FF1B}\u{FF1A}\u{FF0C}\u{2018}\u{2019}\u{201C}\u{201D}] | # Punctuation
+        [｡､%％] |
         \s+                      # Whitespace
         "#,
     )

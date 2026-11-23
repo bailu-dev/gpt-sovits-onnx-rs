@@ -23,43 +23,54 @@ pub fn g2p(text: &str) -> (Vec<String>, Vec<i32>) {
     let mut phones = Vec::new();
     let mut word2ph = Vec::new();
 
-    for (word, jyutping) in jyutping_list {
-        let chars: Vec<char> = word.chars().collect();
-        let jyutping_parts: Vec<&str> = jyutping.split_whitespace().collect();
-
-        if chars.len() == jyutping_parts.len() {
-            for (c, jp) in chars.iter().zip(jyutping_parts.iter()) {
-                let (initial, final_) = split_jyutping(jp);
-                if !initial.is_empty() {
-                    phones.push(format!("Y{initial}"));
-                }
-                if !final_.is_empty() {
-                    phones.push(format!("Y{final_}"));
-                    word2ph.push(2);
-                } else if PUNCTUATION_SET.contains(c) {
-                    phones.push(c.to_string());
-                    word2ph.push(1);
-                }
-            }
+    for (character, jyutping) in jyutping_list {
+        if character
+            .chars()
+            .next()
+            .is_some_and(|c| PUNCTUATION_SET.contains(&c))
+        {
+            phones.push(character);
+            word2ph.push(1);
+        } else if let Some((initial, final_, tone)) = split_jyutping(&jyutping) {
+            phones.push(format!("Y{initial}"));
+            phones.push(format!("Y{final_}{tone}"));
+            word2ph.push(2);
         } else {
-            for c in chars {
-                if PUNCTUATION_SET.contains(&c) {
-                    phones.push(c.to_string());
-                    word2ph.push(1);
-                }
-            }
+            phones.push("UNK".into());
+            word2ph.push(1);
         }
     }
 
     (phones, word2ph)
 }
 
-fn split_jyutping(jyutping: &str) -> (String, String) {
-    for ini in INITIALS.iter().rev() {
-        if jyutping.starts_with(ini) {
-            let rest = &jyutping[ini.len()..];
-            return (ini.to_string(), rest.to_string());
-        }
+fn split_jyutping(jyutping: &str) -> Option<(&str, &str, &str)> {
+    let syllable = jyutping.trim_end_matches(|c: char| c.is_ascii_digit());
+    let tone = &jyutping[syllable.len()..];
+    // Match in model vocabulary order, so ng and gw precede n and g.
+    let initial = INITIALS
+        .iter()
+        .copied()
+        .find(|initial| syllable.starts_with(initial))?;
+    let remaining = &syllable[initial.len()..];
+    let final_ = if remaining.is_empty() {
+        &initial[initial.len() - 1..]
+    } else {
+        remaining
+    };
+    Some((initial, final_, tone))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::preprocessor::phone_symbol::SYMBOLS;
+
+    #[test]
+    fn cantonese_punctuation_and_compound_initials_match_the_model() {
+        let (phones, word2ph) = g2p("我,光.");
+        assert_eq!(phones, ["Yng", "Yo5", ",", "Ygw", "Yong1", "."]);
+        assert_eq!(word2ph, [2, 1, 2, 1]);
+        assert!(phones.iter().all(|phone| SYMBOLS.contains_key(phone)));
     }
-    (String::new(), jyutping.to_string())
 }

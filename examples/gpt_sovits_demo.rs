@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use gpt_sovits_onnx_rs::*;
 use hound::{WavSpec, WavWriter};
 use std::num::NonZeroUsize;
@@ -16,14 +16,18 @@ struct Args {
     run_count: NonZeroUsize,
     #[arg(long)]
     text: String,
-    #[arg(long, default_value = "zh")]
-    lang: String,
+    /// Language mode used for the text to synthesize.
+    #[arg(long, default_value = "auto", value_enum)]
+    lang: CliLanguage,
     /// Reference WAV path. The default is ref.wav in the current directory.
     #[arg(long, default_value = "ref.wav")]
     ref_audio: PathBuf,
     /// Accurate transcript of the reference WAV.
     #[arg(long)]
     ref_text: String,
+    /// Language mode used for the reference transcript.
+    #[arg(long, default_value = "auto", value_enum)]
+    ref_lang: CliLanguage,
     #[arg(long)]
     top_k: Option<usize>,
     #[arg(long)]
@@ -57,6 +61,26 @@ struct Args {
     #[cfg(target_os = "android")]
     #[arg(long, requires = "qnn_libraries", help_heading = "Optional QNN pipeline")]
     compile_qnn_context: bool,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum CliLanguage {
+    #[value(alias = "zh", alias = "en")]
+    Auto,
+    #[value(name = "ja")]
+    Japanese,
+    #[value(name = "yue")]
+    Cantonese,
+}
+
+impl From<CliLanguage> for LangId {
+    fn from(language: CliLanguage) -> Self {
+        match language {
+            CliLanguage::Auto => Self::Auto,
+            CliLanguage::Japanese => Self::Japanese,
+            CliLanguage::Cantonese => Self::AutoYue,
+        }
+    }
 }
 
 struct TimingStats {
@@ -265,17 +289,13 @@ fn main() -> Result<(), GSVError> {
         )));
     }
     let infer = resolve_infer_params(&args)?;
-    let lang = if args.lang == "yue" {
-        LangId::AutoYue
-    } else {
-        LangId::Auto
-    };
+    let lang = args.lang.into();
 
     #[cfg(target_os = "android")]
     init_android_ort(&args)?;
 
     let mut model = create_model(&args.model_path)?;
-    model.process_reference_sync(&args.ref_audio, &args.ref_text, LangId::Auto)?;
+    model.process_reference_sync(&args.ref_audio, &args.ref_text, args.ref_lang.into())?;
 
     if let Some(path) = &args.dump_qnn_inputs {
         let inputs = model.qnn_calibration_inputs(&args.text, infer.to_sampling_params(), lang)?;

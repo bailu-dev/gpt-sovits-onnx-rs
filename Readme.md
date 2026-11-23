@@ -10,6 +10,19 @@ GPT-SoVITS ONNX RS 是 [GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) 的�
 给定参考 WAV、它的准确转录和待朗读文本，库以参考音色生成 32 kHz 单声道音频。Rust 应用
 可以逐块接收 PCM 或一次取回整段音频，命令行示例可以用同一套模型直接生成 WAV。
 
+## 音频试听
+
+四段试听都用项目的白露参考音和 v2Pro `quality` 模型流式合成。粤语使用 `--lang yue`。
+参考音可与转录一起用于下方的快速开始。
+[白露参考音 WAV](doc/audio/bailu-09.wav) · [准确转录](doc/audio/bailu-09.txt)
+
+| 语言 | 朗读文本 | 音频 |
+| --- | --- | --- |
+| 普通话 | 雨停以后，我们沿着河边慢慢走。远处灯塔的光，照在安静的水面上。 | [试听 WAV](doc/audio/mandarin.wav) |
+| 粤语 | 雨停咗之後，我哋沿住河邊慢慢行。遠處燈塔嘅燈光，照住靜靜嘅水面。 | [试听 WAV](doc/audio/cantonese.wav) |
+| 英语 | After the rain stopped, we walked slowly along the river. The lighthouse cast its light across the quiet water. | [试听 WAV](doc/audio/english.wav) |
+| 日语 | 雨がやんだあと、私たちは川沿いをゆっくり歩きました。灯台の光が、静かな水面に映っていました。 | [试听 WAV](doc/audio/japanese.wav) |
+
 ## 项目做了哪些优化
 
 - **重新组织 ONNX 导出。** 将 T2S 首步和逐 token 解码拆成独立图，显式导出 KV 状态，让
@@ -39,7 +52,7 @@ S25 Ultra 另一次多句测试以 RTF 0.219 生成了 72 秒音频。上百秒�
 | 项目 | 支持情况 |
 | --- | --- |
 | 模型 | v2、v2Pro、v2ProPlus 整段推理。v2Pro CPU 句内流式已在 macOS 和 Android 实测 |
-| 语言 | 普通话、英文及中英混读。粤语可使用 CLI 的 `--lang yue` 或 Rust 的 `LangId::AutoYue` |
+| 语言 | 普通话、英文、日语及自动混读。粤语使用 CLI 的 `--lang yue` 或 Rust 的 `LangId::AutoYue` |
 | 输出 | 流式接口逐块交付 PCM，整段接口一次交付完整 PCM。CLI 将输出写为 WAV |
 | 平台 | x86-64 和 arm64 CPU。Android 示例面向 `arm64-v8a` |
 | 自定义音色 | 参考 WAV 与准确转录可在运行时更换，Pro 系列使用 `sv.onnx` 提取说话人特征 |
@@ -58,19 +71,39 @@ uvx --from huggingface_hub hf download mikv39/gpt-sovits-onnx-custom \
 MODEL_DIR="$MODEL_ROOT/quality"
 ```
 
-准备一段建议 3–10 秒的单声道 PCM16 WAV，把 `--ref-text` 换成它的准确转录。
+用上面的白露参考音复现普通话试听。也可以换成自己的单声道 PCM16 WAV，建议时长 3–10 秒，并传入对应的准确转录。
 
 ```bash
 cargo run --release --example gpt_sovits_demo -- \
-  --model-path "$MODEL_DIR" --stream \
-  --ref-audio /path/to/voice.wav --ref-text '<参考音转录>' \
-  --text '等雨停下来以后，我们沿着河边走到灯塔。' \
+  --model-path "$MODEL_DIR" --stream --block-tokens 8 --seed 42 \
+  --ref-audio doc/audio/bailu-09.wav --ref-text "$(cat doc/audio/bailu-09.txt)" \
+  --text '雨停以后，我们沿着河边慢慢走。远处灯塔的光，照在安静的水面上。' \
   --output speech.wav
 ```
 
 - **生成整段音频**可以使用本目录的 `vits_non_streaming.onnx`。[整段模型运行](https://huggingface.co/mikv39/gpt-sovits-onnx-custom#run)
 - **在 Android 上运行**从下面的[真机构建与使用](#android-真机构建与使用)继续。
 - **导出自己的权重或量化模型**从[模型导出](scripts/README.md#从权重导出)开始。
+
+## 日语与自动混读
+
+使用日语前，给当前模型目录安装 NAIST-JDic 词典。脚本下载并校验固定版本，解压到
+`g2p_ja/`。Rust 推理库按需读取该目录，流式和整段合成使用同一份词典。
+
+```bash
+./scripts/prepare_japanese_dictionary.sh "$MODEL_DIR"
+cargo run --release --example gpt_sovits_demo -- \
+  --model-path "$MODEL_DIR" --stream --block-tokens 8 --seed 42 --lang ja --ref-lang auto \
+  --ref-audio doc/audio/bailu-09.wav --ref-text "$(cat doc/audio/bailu-09.txt)" \
+  --text '雨がやんだあと、私たちは川沿いをゆっくり歩きました。灯台の光が、静かな水面に映っていました。' \
+  --output japanese.wav
+```
+
+`--lang auto` 是默认模式。检测到假名时，原始行里的汉字按日语读，英文单词走英文前端。
+纯汉字行默认按普通话读，像「大丈夫」这种纯汉字日文可用 `--lang ja`。参考音的
+`--ref-lang` 独立设置，默认也是 `auto`。Rust API 对应 `LangId::Auto` 与
+`LangId::Japanese`。
+[词典来源](https://github.com/jpreprocess/jpreprocess/releases/tag/v0.15.0)
 
 ## Android 真机构建与使用
 

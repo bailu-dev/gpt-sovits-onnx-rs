@@ -189,6 +189,12 @@ impl TTSModel {
             .ok_or_else(|| GSVError::from("Reference data not initialized"))?
             .clone();
         let sentences = pre_seg_text(text, infer_lang_en(text));
+        if lang.uses_japanese(text) {
+            let Some(_compute) = enter_compute() else {
+                return Ok(());
+            };
+            self.text_processor.preload_japanese(text, lang)?;
+        }
         let spec = self.output_spec;
         let mut vocoder = self
             .sovits
@@ -289,11 +295,20 @@ impl TTSModel {
                         let Some(_compute) = enter_compute() else {
                             return Ok(());
                         };
-                        self.text_processor
-                            .get_phone_and_bert_whole(&sentence.text, lang)
+                        self.text_processor.get_phone_and_bert_for_line(
+                            &sentence.text,
+                            lang,
+                            sentence.line_has_kana,
+                        )
                     };
-                    let Ok((_, phones, bert)) = features else {
-                        continue;
+                    let (_, phones, bert) = match features {
+                        Ok(features) => features,
+                        Err(error)
+                            if sentence.line_has_kana || matches!(lang, LangId::Japanese) =>
+                        {
+                            return Err(error.into());
+                        }
+                        Err(_) => continue,
                     };
                     let phones: Arc<[i64]> = phones.into();
                     let pause_samples = sentence

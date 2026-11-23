@@ -1,6 +1,6 @@
 // Language segmentation for mixed zh/en/digit input (port of LangSegmenter.getTexts)
 
-use crate::preprocessor::lang::Lang;
+use crate::preprocessor::lang::{Lang, contains_kana};
 use jieba_rs::Jieba;
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -18,6 +18,7 @@ pub struct LangSpan {
 enum RawLang {
     Zh,
     En,
+    Ja,
     Digit,
     Punct,
     Unknown,
@@ -28,18 +29,19 @@ static DIGIT_ONLY: Lazy<Regex> =
 static ASCII_WORD: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^[a-zA-Z]+(?:['-][a-zA-Z]+)*$").unwrap());
 
-const PUNCT_CHARS: &[char] = &['，', '。', '！', '？', ',', '.', '!', '?', '…'];
+const PUNCT_CHARS: &[char] = &['，', '。', '！', '？', ',', '.', '!', '?', '…', '､', '｡'];
 
 /// Segment text into language spans (Python `LangSegmenter.getTexts` for auto mode).
-pub fn get_spans(text: &str, jieba: &Jieba) -> Vec<LangSpan> {
-    let raw = tokenize_raw(text, jieba);
-    let resolved = assign_digit_lang_v2(raw);
+pub fn get_spans(text: &str, jieba: &Jieba, japanese_line: bool) -> Vec<LangSpan> {
+    let raw = tokenize_raw(text, jieba, japanese_line);
+    let default = if japanese_line { Lang::Ja } else { Lang::Zh };
+    let resolved = assign_digit_lang_v2(raw, default);
     merge_adjacent(resolved)
 }
 
-fn tokenize_raw(text: &str, jieba: &Jieba) -> Vec<(RawLang, String)> {
+fn tokenize_raw(text: &str, jieba: &Jieba, japanese_line: bool) -> Vec<(RawLang, String)> {
     let mut spans: Vec<(RawLang, String)> = Vec::new();
-    let has_mandarin = text.chars().any(is_han);
+    let has_mandarin = !japanese_line && text.chars().any(is_han);
     for m in TOKEN_REGEX.find_iter(text) {
         let token = m.as_str();
         if token.chars().all(|c| c.is_whitespace()) {
@@ -53,7 +55,11 @@ fn tokenize_raw(text: &str, jieba: &Jieba) -> Vec<(RawLang, String)> {
         if token.trim().is_empty() {
             continue;
         }
-        if HAN_ONLY.is_match(token) {
+        if japanese_line
+            && (HAN_ONLY.is_match(token) || contains_kana(token) || token.starts_with(['ー', 'ｰ']))
+        {
+            push_raw(&mut spans, RawLang::Ja, token);
+        } else if HAN_ONLY.is_match(token) {
             for word in jieba.cut(token, true) {
                 if word.trim().is_empty() {
                     continue;
@@ -108,7 +114,7 @@ fn push_raw(spans: &mut Vec<(RawLang, String)>, lang: RawLang, text: &str) {
     spans.push((lang, text.to_string()));
 }
 
-fn assign_digit_lang_v2(spans: Vec<(RawLang, String)>) -> Vec<(Lang, String)> {
+fn assign_digit_lang_v2(spans: Vec<(RawLang, String)>, default: Lang) -> Vec<(Lang, String)> {
     let n = spans.len();
     if n == 0 {
         return Vec::new();
@@ -118,14 +124,21 @@ fn assign_digit_lang_v2(spans: Vec<(RawLang, String)>) -> Vec<(Lang, String)> {
         .iter()
         .map(|(l, _)| match l {
             RawLang::En => Lang::En,
-            RawLang::Zh | RawLang::Punct => Lang::Zh,
-            RawLang::Digit | RawLang::Unknown => Lang::Zh,
+            RawLang::Zh => Lang::Zh,
+            RawLang::Ja => Lang::Ja,
+            RawLang::Punct | RawLang::Digit | RawLang::Unknown => default,
         })
         .collect();
 
     if spans.iter().any(|(l, _)| *l == RawLang::Digit) {
         for i in 0..n {
             if spans[i].0 != RawLang::Digit {
+                continue;
+            }
+            if (i > 0 && spans[i - 1].0 == RawLang::Ja)
+                || (i + 1 < n && spans[i + 1].0 == RawLang::Ja)
+            {
+                langs[i] = Lang::Ja;
                 continue;
             }
             langs[i] = if i > 0 && spans[i - 1].0 == RawLang::Zh {
@@ -141,7 +154,7 @@ fn assign_digit_lang_v2(spans: Vec<(RawLang, String)>) -> Vec<(Lang, String)> {
             } else if i + 1 < n {
                 langs[i + 1]
             } else {
-                Lang::Zh
+                default
             };
 
             if i > 0 && i + 1 < n {
@@ -180,13 +193,13 @@ fn assign_digit_lang_v2(spans: Vec<(RawLang, String)>) -> Vec<(Lang, String)> {
         if spans[i].0 == RawLang::Unknown {
             let cjk = full_cjk(&spans[i].1);
             if !cjk.is_empty() {
-                langs[i] = Lang::Zh;
+                langs[i] = default;
             } else if i > 0 {
                 langs[i] = langs[i - 1];
             } else if i + 1 < n {
                 langs[i] = langs[i + 1];
             } else {
-                langs[i] = Lang::Zh;
+                langs[i] = default;
             }
         }
     }
@@ -308,6 +321,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn japanese_spans_keep_counters_and_route_english_words() {
+        let jieba = Jieba::new();
+        let spans = get_spans("今日は GPT 3人に会います。", &jieba, true);
+        let contents: Vec<_> = spans
+            .iter()
+            .map(|span| (span.lang, span.text.trim()))
+            .collect();
+        assert_eq!(
+            contents,
+            [
+                (Lang::Ja, "今日は"),
+                (Lang::En, "GPT"),
+                (Lang::Ja, "3人に会います。"),
+            ]
+        );
+        assert_eq!(get_spans("入口。", &jieba, true)[0].lang, Lang::Ja);
+        assert_eq!(get_spans("入口。", &jieba, false)[0].lang, Lang::Zh);
+    }
+
+    #[test]
     fn test_full_en() {
         assert!(full_en("hello"));
         assert!(full_en("GPT-SoVITS"));
@@ -317,7 +350,7 @@ mod tests {
     #[test]
     fn test_digit_before_zh_unit() {
         let jieba = Jieba::new();
-        let spans = get_spans("2024年", &jieba);
+        let spans = get_spans("2024年", &jieba, false);
         assert!(!spans.is_empty());
         assert_eq!(spans[0].lang, Lang::Zh);
     }
@@ -325,7 +358,7 @@ mod tests {
     #[test]
     fn test_preserves_space_after_comma() {
         let jieba = Jieba::new();
-        let spans = get_spans("了, 这是一个Test", &jieba);
+        let spans = get_spans("了, 这是一个Test", &jieba, false);
         let combined: String = spans.iter().map(|s| s.text.as_str()).collect();
         assert!(
             combined.contains(", 这") || spans.iter().any(|s| s.text.contains(", 这")),
@@ -337,14 +370,14 @@ mod tests {
     #[test]
     fn test_mixed_zh_en() {
         let jieba = Jieba::new();
-        let spans = get_spans("你好hello世界", &jieba);
+        let spans = get_spans("你好hello世界", &jieba, false);
         assert!(spans.len() >= 2);
     }
 
     #[test]
     fn test_preserves_english_word_spaces() {
         let jieba = Jieba::new();
-        let spans = get_spans("Change, Do you like it?", &jieba);
+        let spans = get_spans("Change, Do you like it?", &jieba, false);
         let en_text: String = spans
             .iter()
             .filter(|s| s.lang == Lang::En)

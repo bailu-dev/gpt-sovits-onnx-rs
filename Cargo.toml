@@ -22,6 +22,7 @@ ort = { version = "=2.0.0-rc.13", features = [
 ] }
 arpabet = "2.0.0"
 jieba-rs = "0.7.2"
+jpreprocess = { version = "=0.15.0", default-features = false, features = ["tokenizer"] }
 ndarray = { version = "=0.17.2", features = ["serde"] }
 pinyin = "0.10.0"
 log = "0.4.25"
@@ -50,6 +51,7 @@ smallvec = "1.15"
 regex = "1.11"
 rubato = "0.16" # For audio resampling
 unicode-segmentation = "1.10.1"
+unicode-normalization = "0.1"
 knf-rs-sys = { git = "https://github.com/bailu-obj/pyannote-rs.git", rev = "f9019f2572afef70f774af17284dfe2980f4f884" }
 
 [features]
