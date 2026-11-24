@@ -107,7 +107,7 @@ cargo run --release --example gpt_sovits_demo -- \
 
 ## Android 真机构建与使用
 
-[Android TTS Demo](https://github.com/bailu-obj/gpt-sovits-android-tts) 是基于 Kotlin 和 Compose
+[Android TTS Demo](https://github.com/bailu-dev/gpt-sovits-android-tts) 是基于 Kotlin 和 Compose
 Material 3 的示例应用。可以用 v2Pro `mobile/` 模型试听文字、切换参考音、比较流式与整段合成的
 推理耗时，也可以设为 Android 的系统 TTS 引擎。Demo 的 README 提供 APK 构建和模型部署步骤。
 

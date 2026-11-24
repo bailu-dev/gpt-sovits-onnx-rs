@@ -129,7 +129,7 @@ which defaults to `auto`. In Rust, use `LangId::Auto` or `LangId::Japanese`.
 
 ## Build and run on Android
 
-The [Android TTS Demo](https://github.com/bailu-obj/gpt-sovits-android-tts/blob/main/README.en.md) is a
+The [Android TTS Demo](https://github.com/bailu-dev/gpt-sovits-android-tts/blob/main/README.en.md) is a
 Kotlin and Compose Material 3 app for the v2Pro `mobile/` bundle. Enter text,
 switch reference voices, compare streaming and whole-utterance inference times,
 or set it as the Android system TTS engine. Its README covers building the APK
